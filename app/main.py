@@ -45,13 +45,65 @@ def index_dashboard(db: Session = Depends(get_db)):
     registered on the server, showing current geospatial metadata and processing health.
     """
     captures = db.query(SplatCapture).order_by(SplatCapture.created_at.desc()).all()
-    
+
     # Calculate counters
     total = len(captures)
     completed = sum(1 for c in captures if c.status == "completed")
     processing = sum(1 for c in captures if c.status == "processing")
     failed = sum(1 for c in captures if c.status == "failed")
-    
+
+    # Construct captures table rows safely without deeply nested f-strings (for Python < 3.12 compatibility)
+    table_content = ""
+    if captures:
+        rows = []
+        for c in captures:
+            desc = c.description or "No description provided."
+            file_link = f'<a href="{c.file_url}" class="file-link" download>Download Splat File</a>' if c.file_url else '<span style="color: var(--text-secondary); font-size: 0.85rem;">Generating...</span>'
+            row = f'''
+            <tr>
+                <td>
+                    <strong>{c.title}</strong>
+                    <div style="font-size: 0.8rem; color: var(--text-secondary); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        {desc}
+                    </div>
+                </td>
+                <td><span class="badge" style="background: rgba(99, 102, 241, 0.1); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.2);">{c.disaster_type}</span></td>
+                <td><span class="badge badge-severity {c.severity.lower()}">{c.severity}</span></td>
+                <td><span class="coordinates">{c.longitude:.5f}, {c.latitude:.5f}</span></td>
+                <td><span class="badge {c.status.lower()}">{c.status}</span></td>
+                <td>
+                    {file_link}
+                </td>
+            </tr>
+            '''
+            rows.append(row)
+        
+        table_content = f"""
+        <table>
+            <thead>
+                <tr>
+                    <th>Location / Title</th>
+                    <th>Disaster Type</th>
+                    <th>Severity</th>
+                    <th>Coordinates (Lon, Lat)</th>
+                    <th>Status</th>
+                    <th>3D Splat File (.splat)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(rows)}
+            </tbody>
+        </table>
+        """
+    else:
+        table_content = """
+        <div class="empty-state">
+            <div class="empty-icon">🛰️</div>
+            <h3>No Splats Registered</h3>
+            <p style="margin-top: 0.5rem; font-size: 0.9rem;">Submit geolocated 3D image tags or upload a video clip via the API client to trigger 3D reconstruction.</p>
+        </div>
+        """
+        
     # Render premium HTML dashboard
     html_content = f"""
     <!DOCTYPE html>
@@ -367,45 +419,7 @@ def index_dashboard(db: Session = Depends(get_db)):
                     Geolocated Disaster 3D Splat Assets
                 </h2>
                 
-                {f"""
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Location / Title</th>
-                            <th>Disaster Type</th>
-                            <th>Severity</th>
-                            <th>Coordinates (Lon, Lat)</th>
-                            <th>Status</th>
-                            <th>3D Splat File (.splat)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {"".join(f'''
-                        <tr>
-                            <td>
-                                <strong>{c.title}</strong>
-                                <div style="font-size: 0.8rem; color: var(--text-secondary); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                                    {c.description or "No description provided."}
-                                </div>
-                            </td>
-                            <td><span class="badge" style="background: rgba(99, 102, 241, 0.1); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.2);">{c.disaster_type}</span></td>
-                            <td><span class="badge badge-severity {c.severity.lower()}">{c.severity}</span></td>
-                            <td><span class="coordinates">{c.longitude:.5f}, {c.latitude:.5f}</span></td>
-                            <td><span class="badge {c.status.lower()}">{c.status}</span></td>
-                            <td>
-                                {f'<a href="{c.file_url}" class="file-link" download>Download Splat File</a>' if c.file_url else '<span style="color: var(--text-secondary); font-size: 0.85rem;">Generating...</span>'}
-                            </td>
-                        </tr>
-                        ''' for c in captures)}
-                    </tbody>
-                </table>
-                """ if captures else f"""
-                <div class="empty-state">
-                    <div class="empty-icon">🛰️</div>
-                    <h3>No Splats Registered</h3>
-                    <p style="margin-top: 0.5rem; font-size: 0.9rem;">Submit geolocated 3D image tags or upload a video clip via the API client to trigger 3D reconstruction.</p>
-                </div>
-                """}
+                {table_content}
             </div>
         </div>
     </body>
