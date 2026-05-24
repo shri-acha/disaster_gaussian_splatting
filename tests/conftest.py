@@ -1,15 +1,19 @@
+import os
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 from app.database import Base, get_db
+from app.models import SplatCapture, ProcessingJob
 from app.main import app
 
-# Use an in-memory SQLite database for fast isolated testing
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+# Use a temporary file-based SQLite database with NullPool to prevent connection lockups
+SQLALCHEMY_DATABASE_URL = "sqlite:///./test_temp.db"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False}
+    connect_args={"check_same_thread": False},
+    poolclass=NullPool
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -17,15 +21,30 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 @pytest.fixture(scope="function")
 def db_session():
     """
-    Creates a fresh clean in-memory database schema for each single test function.
+    Creates a fresh clean database schema for each single test function.
     """
+    # Create tables
     Base.metadata.create_all(bind=engine)
     db = TestingSessionLocal()
     try:
         yield db
     finally:
         db.close()
+        # Clean up tables
         Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_temp_db():
+    """
+    Ensures that the temporary SQLite test database file is removed after the entire test suite runs.
+    """
+    yield
+    if os.path.exists("test_temp.db"):
+        try:
+            os.remove("test_temp.db")
+        except OSError:
+            pass
 
 
 @pytest.fixture(scope="function")

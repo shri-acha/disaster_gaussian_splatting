@@ -1,0 +1,29 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Databases & local files
+*.db
+*.sqlite3
+disaster_splats.db
+test_temp.db
+
+# Static uploads & local media folders (holds uploaded videos/splats)
+static/
+uploads/
+
+# IDE configurations
+.vscode/
+.idea/
+
+# Environment configurations
+.env
+.env.development
+.env.production
