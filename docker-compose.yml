@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------
+  # 1. FastAPI Application Server (Stage 1/2/3 REST API)
+  # ----------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: splat_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://gis_user:gis_pass@db:5432/gis_db
+      - REDIS_URL=redis://redis:6379/0
+      - LUMA_API_KEY=${LUMA_API_KEY}
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # ----------------------------------------------------
+  # 2. Celery Distributed Task Worker (Stage 2 Video Processing)
+  # ----------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: splat_worker
+    command: celery -A app.tasks worker --loglevel=info
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://gis_user:gis_pass@db:5432/gis_db
+      - REDIS_URL=redis://redis:6379/0
+      - LUMA_API_KEY=${LUMA_API_KEY}
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # ----------------------------------------------------
+  # 3. PostgreSQL Database with PostGIS Extension (Stage 1/3 Spatial Storage)
+  # ----------------------------------------------------
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: splat_postgis
+    environment:
+      - POSTGRES_USER=gis_user
+      - POSTGRES_PASSWORD=gis_pass
+      - POSTGRES_DB=gis_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gis_user -d gis_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------
+  # 4. Redis Broker (Queue management)
+  # ----------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: splat_redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
