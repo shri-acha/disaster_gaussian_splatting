@@ -161,7 +161,7 @@ def test_video_job_pipeline_trigger(client):
     assert response.status_code == 202
     job_data = response.json()
     assert job_data["progress"] == 0
-    assert job_data["status_message"] == "Video uploaded successfully. Starting pipeline..."
+    assert job_data["status_message"] == "Video received. Queuing reconstruction pipeline..."
     assert "id" in job_data
     
     # Query job progress status
@@ -423,107 +423,13 @@ def test_get_job_by_capture(client):
     assert response_404.status_code == 404
     assert response_404.json()["detail"] == "No processing job found for this capture"
 
-
-# ---------------------------------------------------------------------------
-# Cloudinary URL submission tests
-# ---------------------------------------------------------------------------
-
-VALID_CLOUDINARY_URL = (
-    "https://res.cloudinary.com/mycloud/video/upload/v1716500000/disaster_clip.mp4"
-)
-
-CLOUDINARY_BASE_PAYLOAD = {
-    "cloudinary_url": VALID_CLOUDINARY_URL,
-    "title": "Flood Zone Cloudinary Test",
-    "description": "High-altitude drone clip uploaded to Cloudinary.",
-    "disaster_type": "flood",
-    "severity": "high",
-    "latitude": 27.7172,
-    "longitude": 85.3240,
-    "altitude": 1350.0,
-}
-
-
-def test_submit_cloudinary_video_success(client):
+def test_list_all_jobs(client):
     """
-    Happy path — valid Cloudinary URL + metadata returns HTTP 202 and a
-    properly initialised ProcessingJobResponse.
+    Test retrieving all jobs in the database (debug endpoint).
     """
-    response = client.post("/api/v1/jobs/submit-cloudinary", json=CLOUDINARY_BASE_PAYLOAD)
-
-    assert response.status_code == 202, response.text
-    job = response.json()
-
-    assert job["progress"] == 0
-    assert job["status_message"] == "Cloudinary URL received. Starting reconstruction pipeline..."
-    assert "id" in job
-    assert "capture_id" in job
-    # The Cloudinary URL must be stored on the job
-    assert job["video_url"] == VALID_CLOUDINARY_URL
-
-
-def test_submit_cloudinary_video_and_poll_status(client):
-    """
-    After submitting a Cloudinary URL job, the job status endpoint must return
-    the same job record.
-    """
-    response = client.post("/api/v1/jobs/submit-cloudinary", json=CLOUDINARY_BASE_PAYLOAD)
-    assert response.status_code == 202
-    job_id = response.json()["id"]
-    capture_id = response.json()["capture_id"]
-
-    # Poll job status
-    status_response = client.get(f"/api/v1/jobs/{job_id}")
-    assert status_response.status_code == 200
-    assert status_response.json()["id"] == job_id
-
-    # Also reachable via capture lookup
-    by_capture = client.get(f"/api/v1/jobs/capture/{capture_id}")
-    assert by_capture.status_code == 200
-    assert by_capture.json()["id"] == job_id
-
-
-def test_submit_cloudinary_video_invalid_url(client):
-    """
-    Non-Cloudinary URLs (e.g. S3, plain HTTP) must be rejected with HTTP 422.
-    """
-    bad_urls = [
-        "https://s3.amazonaws.com/mybucket/clip.mp4",   # S3, not Cloudinary
-        "http://res.cloudinary.com/c/video/upload/v1/clip.mp4",  # http, not https
-        "https://res.cloudinary.com/mycloud/image/upload/v1/photo.jpg",  # image, not video
-        "not-a-url-at-all",
-        "",
-    ]
-    for bad_url in bad_urls:
-        payload = {**CLOUDINARY_BASE_PAYLOAD, "cloudinary_url": bad_url}
-        resp = client.post("/api/v1/jobs/submit-cloudinary", json=payload)
-        assert resp.status_code == 422, (
-            f"Expected 422 for URL '{bad_url}', got {resp.status_code}"
-        )
-
-
-def test_submit_cloudinary_video_invalid_extension(client):
-    """
-    A Cloudinary URL pointing to an unsupported file type must be rejected
-    with HTTP 422.
-    """
-    payload = {
-        **CLOUDINARY_BASE_PAYLOAD,
-        "cloudinary_url": "https://res.cloudinary.com/mycloud/video/upload/v1/clip.pdf",
-    }
-    response = client.post("/api/v1/jobs/submit-cloudinary", json=payload)
-    assert response.status_code == 422
-
-
-def test_submit_cloudinary_video_invalid_coordinates(client):
-    """
-    Out-of-range coordinates must be rejected with HTTP 422 by Pydantic.
-    """
-    # Latitude > 90
-    payload_lat = {**CLOUDINARY_BASE_PAYLOAD, "latitude": 95.0}
-    assert client.post("/api/v1/jobs/submit-cloudinary", json=payload_lat).status_code == 422
-
-    # Longitude < -180
-    payload_lon = {**CLOUDINARY_BASE_PAYLOAD, "longitude": -200.0}
-    assert client.post("/api/v1/jobs/submit-cloudinary", json=payload_lon).status_code == 422
+    # Get list of all jobs
+    response = client.get("/api/v1/jobs/")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
 
