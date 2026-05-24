@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import SplatCapture, ProcessingJob
-from app.schemas import ProcessingJobResponse
+from app.schemas import ProcessingJobResponse, CloudinaryJobRequest
 from app.services.storage import storage_service
-from app.tasks import execute_reconstruction_pipeline
+from app.tasks import execute_reconstruction_pipeline, execute_reconstruction_pipeline_from_url
 
 router = APIRouter()
 
@@ -92,4 +92,74 @@ def get_job_by_capture(capture_id: str, db: Session = Depends(get_db)):
     job = db.query(ProcessingJob).filter(ProcessingJob.capture_id == capture_id).order_by(ProcessingJob.created_at.desc()).first()
     if not job:
         raise HTTPException(status_code=404, detail="No processing job found for this capture")
+    return job
+
+
+@router.post(
+    "/submit-cloudinary",
+    response_model=ProcessingJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit Cloudinary video URL for 3D reconstruction",
+)
+async def submit_cloudinary_video(
+    payload: CloudinaryJobRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Stage 2 (Cloudinary variant) — Accept a **Cloudinary delivery URL** instead
+    of a raw file upload.  The URL is validated, stored, and forwarded directly
+    to the Luma AI reconstruction API (or the internal simulation pipeline when
+    no ``LUMA_API_KEY`` is set).
+
+    **Request body** (JSON):
+    ```json
+    {
+      "cloudinary_url": "https://res.cloudinary.com/mycloud/video/upload/v123/clip.mp4",
+      "title": "Flood Zone A",
+      "disaster_type": "flood",
+      "severity": "high",
+      "latitude": 27.7172,
+      "longitude": 85.3240
+    }
+    ```
+
+    **Returns** a `ProcessingJobResponse` immediately (HTTP 202).  Poll
+    `GET /api/v1/jobs/{job_id}` to track progress.
+    """
+    # 1. Create SplatCapture shell
+    capture = SplatCapture(
+        title=payload.title,
+        description=payload.description,
+        disaster_type=payload.disaster_type,
+        severity=payload.severity,
+        status="pending",
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        altitude=payload.altitude,
+        roll=payload.roll,
+        pitch=payload.pitch,
+        yaw=payload.yaw,
+        scale_x=payload.scale_x,
+        scale_y=payload.scale_y,
+        scale_z=payload.scale_z,
+    )
+    db.add(capture)
+    db.commit()
+    db.refresh(capture)
+
+    # 2. Create ProcessingJob — store the Cloudinary URL in video_url
+    job = ProcessingJob(
+        capture_id=capture.id,
+        video_url=payload.cloudinary_url,  # Cloudinary URL, no local file
+        progress=0,
+        status_message="Cloudinary URL received. Starting reconstruction pipeline...",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # 3. Kick off the Cloudinary-aware background pipeline
+    background_tasks.add_task(execute_reconstruction_pipeline_from_url, job.id)
+
     return job

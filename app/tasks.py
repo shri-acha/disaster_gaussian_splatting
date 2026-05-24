@@ -185,3 +185,180 @@ def execute_reconstruction_pipeline(job_id: str):
             db.commit()
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Cloudinary URL pipeline  (no local file I/O — URL passed directly to Luma)
+# ---------------------------------------------------------------------------
+
+def execute_reconstruction_pipeline_from_url(job_id: str):
+    """
+    Orchestrates 3D Gaussian Splatting reconstruction from a Cloudinary-hosted
+    video URL.  The URL is passed directly to the Luma AI reconstruction API
+    (or the internal simulation pipeline) without downloading the file locally.
+
+    Execution flow
+    --------------
+    1. Fetch job + capture records from the database.
+    2. Mark capture as *processing*.
+    3. Call the Luma AI /captures endpoint with the Cloudinary URL as the
+       source asset (``source_url``).  Falls back to simulation when no
+       ``LUMA_API_KEY`` is configured.
+    4. Poll Luma until the capture is *completed* or *failed*.
+    5. Persist the resulting point-cloud / splat URL on the SplatCapture record.
+    """
+    db: Session = SessionLocal()
+    try:
+        # 1. Fetch records ---------------------------------------------------
+        job = db.query(ProcessingJob).filter(ProcessingJob.id == job_id).first()
+        if not job:
+            return
+
+        capture = db.query(SplatCapture).filter(SplatCapture.id == job.capture_id).first()
+        if not capture:
+            job.status_message = "Failed: Parent capture not found"
+            db.commit()
+            return
+
+        cloudinary_url = job.video_url  # stored as the Cloudinary delivery URL
+
+        # 2. Mark processing -------------------------------------------------
+        capture.status = "processing"
+        job.progress = 10
+        job.status_message = "Validating Cloudinary source URL..."
+        db.commit()
+
+        # 3. Submit to Luma AI (or simulate) ----------------------------------
+        time.sleep(1)
+        job.progress = 20
+        job.status_message = "Submitting Cloudinary video URL to reconstruction engine..."
+        db.commit()
+
+        luma_capture_id = None
+
+        if settings.LUMA_API_KEY:
+            import requests  # only needed for real Luma API calls
+            # ---- Real Luma AI integration -----------------------------------
+            headers = {
+                "Authorization": f"luma-api-key={settings.LUMA_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            # Luma /captures endpoint accepts a source_url for remote assets
+            submit_resp = requests.post(
+                f"{settings.LUMA_API_URL}/captures",
+                json={"source_url": cloudinary_url},
+                headers=headers,
+                timeout=30,
+            )
+            if submit_resp.status_code not in (200, 201):
+                raise RuntimeError(
+                    f"Luma API submission failed ({submit_resp.status_code}): {submit_resp.text}"
+                )
+
+            luma_capture_id = submit_resp.json().get("id")
+            job.task_id = luma_capture_id
+            job.progress = 30
+            job.status_message = f"Luma capture submitted (id={luma_capture_id}). Polling for completion..."
+            db.commit()
+
+            # 4. Poll Luma until done ----------------------------------------
+            poll_interval = 15  # seconds
+            max_polls = 60      # up to ~15 minutes
+            luma_file_url = None
+
+            for poll_num in range(max_polls):
+                time.sleep(poll_interval)
+
+                status_resp = requests.get(
+                    f"{settings.LUMA_API_URL}/captures/{luma_capture_id}",
+                    headers=headers,
+                    timeout=30,
+                )
+                if status_resp.status_code != 200:
+                    continue
+
+                luma_data = status_resp.json()
+                luma_status = luma_data.get("status", "")
+
+                # Map Luma progress to our 30-90 band
+                pct = min(30 + int((poll_num / max_polls) * 60), 90)
+                job.progress = pct
+                job.status_message = f"Luma reconstruction in progress... ({luma_status})"
+                db.commit()
+
+                if luma_status == "completed":
+                    luma_file_url = (
+                        luma_data.get("artifacts", {}).get("point_cloud_url")
+                        or luma_data.get("file_url")
+                    )
+                    break
+
+                if luma_status in ("failed", "error"):
+                    raise RuntimeError(
+                        f"Luma reconstruction failed: {luma_data.get('error', 'unknown error')}"
+                    )
+
+            if not luma_file_url:
+                raise RuntimeError("Luma reconstruction timed out or returned no output file.")
+
+            # 5. Persist Luma result -----------------------------------------
+            capture.file_url = luma_file_url
+            job.progress = 95
+            job.status_message = "Finalising Luma output..."
+            db.commit()
+
+        else:
+            # ---- Simulation fallback (no API key configured) ----------------
+            for pct, msg in [
+                (30, "Decoding Cloudinary stream metadata..."),
+                (50, "Training Neural Radiance Fields / 3D Gaussian Splats..."),
+                (70, "Optimising Gaussian splat cloud (30% training)..."),
+                (85, "Optimising Gaussian splat cloud (55% training)..."),
+                (95, "Converting 3D model to optimised .splat format..."),
+            ]:
+                time.sleep(3)
+                job.progress = pct
+                job.status_message = msg
+                db.commit()
+
+            # Write a mock splat file as the simulated output
+            mock_filename = f"capture_{capture.id}.splat"
+            mock_splat_dir = os.path.join(settings.STATIC_DIR, "splats")
+            os.makedirs(mock_splat_dir, exist_ok=True)
+            mock_splat_path = os.path.join(mock_splat_dir, mock_filename)
+            with open(mock_splat_path, "wb") as f:
+                f.write(
+                    b"MOCK_3D_GAUSSIAN_SPLAT_DATA_CLOUDINARY_"
+                    + capture.id.encode("utf-8")
+                )
+
+            mock_thumbnail_dir = os.path.join(settings.STATIC_DIR, "thumbnails")
+            os.makedirs(mock_thumbnail_dir, exist_ok=True)
+            mock_thumb_path = os.path.join(mock_thumbnail_dir, f"thumb_{capture.id}.jpg")
+            with open(mock_thumb_path, "wb") as f:
+                f.write(b"MOCK_IMAGE_THUMBNAIL_DATA")
+
+            capture.file_url = f"/static/splats/{mock_filename}"
+            capture.thumbnail_url = f"/static/thumbnails/thumb_{capture.id}.jpg"
+            job.progress = 95
+            job.status_message = "Simulation complete. Finalising..."
+            db.commit()
+
+        # 6. Final DB updates ------------------------------------------------
+        capture.status = "completed"
+        job.progress = 100
+        job.status_message = "Reconstruction from Cloudinary URL completed successfully!"
+        db.commit()
+
+    except Exception as e:
+        db.rollback()
+        if "job" in locals() and job:
+            job.progress = 100
+            job.status_message = "Failed"
+            job.error_log = str(e)
+            db.commit()
+        if "capture" in locals() and capture:
+            capture.status = "failed"
+            db.commit()
+    finally:
+        db.close()
