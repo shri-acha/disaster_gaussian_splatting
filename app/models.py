@@ -64,3 +64,28 @@ class ProcessingJob(Base):
 
     # Relationships
     capture = relationship("SplatCapture", back_populates="jobs")
+
+    @property
+    def status(self) -> str:
+        return self.capture.status if self.capture else "pending"
+
+    @property
+    def title(self) -> str:
+        return self.capture.title if self.capture else "Unknown Location"
+
+    @property
+    def disaster_type(self) -> str:
+        return self.capture.disaster_type if self.capture else "other"
+
+    @property
+    def severity(self) -> str:
+        return self.capture.severity if self.capture else "medium"
+
+    @property
+    def latitude(self) -> float:
+        return self.capture.latitude if self.capture else 0.0
+
+    @property
+    def longitude(self) -> float:
+        return self.capture.longitude if self.capture else 0.0
+

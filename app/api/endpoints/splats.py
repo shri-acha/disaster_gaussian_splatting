@@ -30,6 +30,14 @@ def create_splat_metadata(payload: SplatCaptureCreate, db: Session = Depends(get
     return db_splat
 
 
+@router.get("/", response_model=list[SplatCaptureResponse])
+def get_all_splats(db: Session = Depends(get_db)):
+    """
+    Retrieves all registered Splat Captures.
+    """
+    return db.query(SplatCapture).order_by(SplatCapture.created_at.desc()).all()
+
+
 @router.post("/{splat_id}/upload-asset", response_model=SplatCaptureResponse)
 async def upload_direct_splat_file(
     splat_id: str, 
